@@ -188,7 +188,7 @@ class VoiceAutoEncoder(pl.LightningModule):
 
         self.tmp_val_outputs.append(val_outputs)
 
-        return loss
+        return {'loss': loss, 'predictions': x_hat, 'inputs': x}
 
     def on_validation_epoch_end(self) -> None:
         outputs = self.tmp_val_outputs

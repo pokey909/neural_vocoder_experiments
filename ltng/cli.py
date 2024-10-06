@@ -11,6 +11,8 @@ from typing import Any, Optional, Sequence, Union
 from .ae import VoiceAutoEncoder
 from .vocoder import DDSPVocoder
 
+# from lightning.pytorch.loggers import WandbLogger
+
 
 class MyPredictionWriter(BasePredictionWriter):
     def __init__(self, output_dir):
@@ -108,3 +110,58 @@ class MyConfigCallback(Callback):
 
         # broadcast so that all ranks are in sync on future calls to .setup()
         self.already_saved = trainer.strategy.broadcast(self.already_saved)
+
+
+class LogAudioPredictionsCallback(Callback):
+    def __init__(self):
+        super().__init__()
+        self.logged_predictions = []
+
+    def on_validation_batch_end(
+        self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0
+    ):
+        if trainer.logger is None:
+            return
+        
+        if len(self.logged_predictions) >= 10:
+            return
+
+        # Ensure outputs is detached and on CPU
+        outputs = outputs['predictions'].detach().cpu()
+
+        # Handle both single and batched outputs
+        if outputs.ndim == 1:
+            # Single audio prediction
+            self.logged_predictions.append(outputs)
+        else:
+            # Batch of audio predictions
+            for pred in outputs:
+                if len(self.logged_predictions) < 10:
+                    self.logged_predictions.append(pred)
+                else:
+                    break
+
+    def on_validation_epoch_end(self, trainer, pl_module):
+        if not self.logged_predictions:
+            return
+
+        import wandb
+
+        sample_rate = pl_module.sample_rate
+        audios = []
+
+        for idx, audio_tensor in enumerate(self.logged_predictions):
+            audio_array = audio_tensor.numpy()
+            audios.append(
+                wandb.Audio(
+                    audio_array,
+                    sample_rate=sample_rate,
+                    caption=f"Prediction {idx + 1}",
+                )
+            )
+
+        # Log the audio predictions to Wandb
+        trainer.logger.experiment.log({"Validation Audio Predictions": audios})
+
+        # Clear the predictions for the next epoch
+        self.logged_predictions = []

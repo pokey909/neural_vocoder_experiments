@@ -275,8 +275,8 @@ class DDSPVocoder(pl.LightningModule):
             return loss
 
         self.tmp_val_outputs.append((loss, l1_loss, f0_loss))
-
-        return loss
+        print("YAYAYA")
+        return {'loss': loss, 'predictions': x_hat, 'inputs': x}
 
     def on_validation_epoch_end(self) -> None:
         outputs = self.tmp_val_outputs

@@ -23,6 +23,7 @@ trainer:
         mode: min
         check_finite: true
         check_on_train_epoch_end: true
+    - class_path: ltng.cli.LogAudioPredictionsCallback
   logger:
     class_path: lightning.pytorch.loggers.wandb.WandbLogger
     init_args:
@@ -73,7 +74,7 @@ ckpt_path: null
 data:
   class_path: ltng.data.Libri
   init_args:
-    batch_size: 128
+    batch_size: 64
     wav_dir: ${oc.env:HOME, ???}/datasets
     duration: 2.0
     overlap: 1.5
