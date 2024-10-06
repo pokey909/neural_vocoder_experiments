@@ -1,5 +1,7 @@
 #!/bin/bash
 
+sudo apt install gh
+
 pip install -r requirements.txt
 pushd .
 cd ~
