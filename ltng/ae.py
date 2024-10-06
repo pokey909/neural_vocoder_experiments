@@ -84,10 +84,11 @@ class VoiceAutoEncoder(pl.LightningModule):
         return F.l1_loss(torch.log(f0_hat + 1e-3), torch.log(f0 + 1e-3))
 
     def training_step(self, batch, batch_idx):
-        x, f0_in_hz = batch
+        x, f0_in_hz, x_target = batch
 
         # convert to AudioTensor
         x = AudioTensor(x)
+        x_target = AudioTensor(x_target)
         f0_in_hz = AudioTensor(f0_in_hz)
 
         params: Dict = self.encoder(x, f0=f0_in_hz if self.train_with_true_f0 else None)
@@ -114,7 +115,7 @@ class VoiceAutoEncoder(pl.LightningModule):
 
         x_hat = self.decoder(**params)
         loss = self.criterion(
-            x_hat[:, : x.shape[1]], x[:, : x_hat.shape[1]]
+            x_hat[:, : x_target.shape[1]], x_target[:, : x_hat.shape[1]]
         ).as_tensor()
 
         if f0_hat is not None:
@@ -146,10 +147,11 @@ class VoiceAutoEncoder(pl.LightningModule):
         self.tmp_val_outputs = []
 
     def validation_step(self, batch, batch_idx):
-        x, f0_in_hz = batch
+        x, f0_in_hz, x_target = batch
 
         # convert to AudioTensor
         x = AudioTensor(x)
+        x_target = AudioTensor(x_target)
         f0_in_hz = AudioTensor(f0_in_hz)
 
         if self.train_with_true_f0:
@@ -157,7 +159,7 @@ class VoiceAutoEncoder(pl.LightningModule):
             x_hat, enc_params = self(x, f0_in_hz, {"phase": phase})
         else:
             x_hat, enc_params = self(x)
-        loss = self.criterion(x_hat[:, : x.shape[1]], x[:, : x_hat.shape[1]]).item()
+        loss = self.criterion(x_hat[:, : x_target.shape[1]], x_target[:, : x_hat.shape[1]]).item()
 
         val_outputs = []
         if "f0" in enc_params:

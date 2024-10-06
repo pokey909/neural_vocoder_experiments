@@ -306,9 +306,9 @@ class LibriDataset(Dataset):
         else:
             x = x[: self.segment_num_frames]
             
-        x = self.add_noise(x, self.noise_probability)
+        x_noise = self.add_noise(x, self.noise_probability)
         
-        return x.astype(np.float32), interp_f0.astype(np.float32)
+        return x_noise.astype(np.float32), interp_f0.astype(np.float32), x.astype(np.float32)
 
 
 class VCTKDataset(M4SingerDataset):
