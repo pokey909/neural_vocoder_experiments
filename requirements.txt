@@ -1,9 +1,9 @@
-numpy
+numpy==1.23.5
 scipy
 pandas
-torch>=2.0.0
-torchaudio>=2.0.0
-lightning[pytorch-extra]
+torch==2.1.2
+torchaudio==2.1.2
+lightning[pytorch-extra]==2.3.0
 tqdm
 matplotlib
 kazane
@@ -18,3 +18,4 @@ fadtk
 pesq
 torchlpc
 penn
+gdown
