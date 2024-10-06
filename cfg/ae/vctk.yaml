@@ -14,7 +14,7 @@ trainer:
         save_last: true
         monitor: val_loss
         save_on_train_epoch_end: false
-        filename: '{epoch}-{step}-{val_loss:.3f}'
+        filename: 'noisy-{epoch}-{step}-{val_loss:.3f}'
         save_top_k: 3
     - class_path: lightning.pytorch.callbacks.EarlyStopping
       init_args:
@@ -27,8 +27,8 @@ trainer:
     class_path: lightning.pytorch.loggers.wandb.WandbLogger
     init_args:
       # entity: iamycy
-      project: vctk-ae
-      log_model: false
+      project: GOLF-ae-noisy
+      log_model: true
 model:
   encoder_class_path: models.enc.VocoderParameterEncoderInterface
   encoder_init_args:
@@ -71,12 +71,14 @@ model:
   train_with_true_f0: true
 ckpt_path: null
 data:
-  class_path: ltng.data.VCTK
+  class_path: ltng.data.Libri
   init_args:
     batch_size: 64
-    wav_dir:  /import/c4dm-datasets-ext/ycy_artefacts/VCTK-24k/
+    wav_dir: /mnt/wsl/PhysicalDrive3p1/datasets/LibriMix_data/LibriSpeech
     duration: 2.0
     overlap: 1.5
+    noise_snr: [0.0, 10.0]
+    noise_probability: 0.5
 optimizer:
   class_path: torch.optim.Adam
   init_args:

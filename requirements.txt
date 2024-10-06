@@ -17,3 +17,4 @@ soundfile
 fadtk
 pesq
 torchlpc
+penn

@@ -8,7 +8,9 @@ from functools import partial
 
 from datasets.mir1k import MIR1KDataset
 from datasets.mpop600 import MPop600Dataset
-
+import torchaudio.functional as tf
+import torch
+import torch.nn.functional as F
 
 class MPop600InferenceDataset(Dataset):
     def __init__(self, wav_dir: str, split: str = "train"):
@@ -209,6 +211,106 @@ class M4SingerDataset(Dataset):
         return x.astype(np.float32), interp_f0.astype(np.float32)
 
 
+class LibriDataset(Dataset):
+    train_folder_prefix = "golf_dev"
+    test_folder_prefix = "golf_test"
+    valid_folder_prefix = "golf_valid"
+    file_suffix = ".wav"
+
+    def __init__(
+        self,
+        wav_dir: str,
+        split: str = "train",
+        duration: float = 2.0,
+        overlap: float = 1.0,
+        f0_suffix: str = ".pv",
+        noise_snr = [0.0, 10.0],
+        noise_probability: float = 0.0
+    ):
+        super().__init__()
+        wav_dir = pathlib.Path(wav_dir)
+        test_files = []
+        valid_files = []
+        train_files = []
+        train_files = list(wav_dir.glob(f"{self.train_folder_prefix}/**/*{self.file_suffix}"))
+        test_files = list(wav_dir.glob(f"{self.test_folder_prefix}/**/*{self.file_suffix}"))
+        valid_files = list(wav_dir.glob(f"{self.valid_folder_prefix}/**/*{self.file_suffix}"))
+            
+        if split == "train":
+            self.files = train_files
+        elif split == "valid":
+            self.files = valid_files
+        elif split == "test":
+            self.files = test_files
+        else:
+            raise ValueError(f"Unknown split: {split}")
+
+        self.sample_rate = None
+
+        file_lengths = []
+        self.samples = []
+        self.f0s = []
+
+        self.uniform_prob = torch.distributions.uniform.Uniform(0, 1)
+        self.uniform_snr =  torch.distributions.uniform.Uniform(noise_snr[0], noise_snr[1])
+        self.noise_probability = noise_probability
+        
+        print("[LibriDataset] Gathering files ...")
+        for filename in tqdm(self.files):
+            x, sr = sf.read(filename, dtype="float32")
+            if self.sample_rate is None:
+                self.sample_rate = sr
+                self.segment_num_frames = int(duration * self.sample_rate)
+                self.hop_num_frames = int((duration - overlap) * self.sample_rate)
+                self.f0_hop_num_frames = 0.005 * self.sample_rate   # assume pitch estimation happened with 5ms chunks
+            else:
+                assert sr == self.sample_rate
+            f0 = np.loadtxt(filename.with_suffix(f0_suffix))
+
+            self.f0s.append(f0)
+            self.samples.append(x)
+            file_lengths.append(
+                max(0, x.shape[0] - self.segment_num_frames) // self.hop_num_frames + 1
+            )
+
+        self.file_lengths = np.array(file_lengths)
+        self.boundaries = np.cumsum(np.array([0] + file_lengths))
+
+    def add_noise(self, x, prob):
+        x = torch.from_numpy(x)
+        p_val = self.uniform_prob.sample([1]).squeeze()
+        if p_val < prob: # apply noise based on probability
+            snr = self.uniform_snr.sample([1]).squeeze() # choose random SNR within snr_range
+            noise = F.tanh(torch.randn_like(x)) # smoothly clip standard normal to -1..1
+            x = tf.add_noise(x, noise, snr=snr)
+        return x.numpy()
+    
+    def __len__(self):
+        return self.boundaries[-1]
+
+    def __getitem__(self, index):
+        bin_pos = np.digitize(index, self.boundaries[1:], right=False)
+        x = self.samples[bin_pos]
+        f0 = self.f0s[bin_pos]
+        f0 = np.where(f0 < 60, 0, f0)
+        offset = (index - self.boundaries[bin_pos]) * self.hop_num_frames
+
+        x = x[offset : offset + self.segment_num_frames]
+        tp = np.arange(len(f0)) * self.f0_hop_num_frames
+        t = np.arange(offset, offset + self.segment_num_frames)
+        mask = np.interp(t, tp, (f0 == 0).astype(float), right=1) > 0
+        interp_f0 = np.where(mask, 0, np.interp(t, tp, f0))
+
+        if x.shape[0] < self.segment_num_frames:
+            x = np.pad(x, (0, self.segment_num_frames - x.shape[0]), "constant")
+        else:
+            x = x[: self.segment_num_frames]
+            
+        x = self.add_noise(x, self.noise_probability)
+        
+        return x.astype(np.float32), interp_f0.astype(np.float32)
+
+
 class VCTKDataset(M4SingerDataset):
     test_folder_prefixes = set(
         [
@@ -246,7 +348,12 @@ class VCTKDataset(M4SingerDataset):
 
     file_suffix = "mic1.wav"
 
-
+class LibriDevDataset(LibriDataset):
+    train_folder_prefix = "golf_dev"
+    test_folder_prefix = "golf_test"
+    valid_folder_prefix = "golf_test"
+    file_suffix = ".wav"
+    
 class VCTKInferenceDataset(Dataset):
     def __init__(self, wav_dir: str, split: str = "train", f0_suffix: str = ".pv"):
         super().__init__()
@@ -290,6 +397,66 @@ class VCTKInferenceDataset(Dataset):
         # base file name
         rel_path = filename.relative_to(self.wav_dir)
 
+        return y.astype(np.float32), interp_f0.astype(np.float32), str(rel_path)
+
+
+class LibriInferenceDataset(Dataset):
+    def __init__(self, 
+                 wav_dir: str, 
+                 split: str = "train", 
+                 f0_suffix: str = ".pv", 
+                 noise_snr = [0.0, 10.0], 
+                 noise_probability: float = 0.0):
+        super().__init__()
+        self.wav_dir = pathlib.Path(wav_dir)
+        test_files = []
+        valid_files = []
+        train_files = []
+        train_files = list(self.wav_dir.glob(f"{LibriDevDataset.train_folder_prefix}/**/*{LibriDevDataset.file_suffix}"))
+        test_files = list(self.wav_dir.glob(f"**/*{LibriDevDataset.file_suffix}"))
+        valid_files = list(self.wav_dir.glob(f"{LibriDevDataset.valid_folder_prefix}/**/*{LibriDevDataset.file_suffix}"))
+
+        self.uniform_prob = torch.distributions.uniform.Uniform(0, 1)
+        self.uniform_snr =  torch.distributions.uniform.Uniform(noise_snr[0], noise_snr[1])
+            
+        if split == "train":
+            self.files = train_files
+        elif split == "valid":
+            self.files = valid_files
+        elif split == "test":
+            self.files = test_files
+        else:
+            raise ValueError(f"Unknown split: {split}")
+
+        self.f0_suffix = f0_suffix
+        self.noise_probability = noise_probability
+        
+    def add_noise(self, x, prob):
+        x = torch.from_numpy(x)
+        p_val = self.uniform_prob.sample([1]).squeeze()
+        if p_val < prob: # apply noise based on probability
+            snr = self.uniform_snr.sample([1]).squeeze() # choose random SNR within snr_range
+            noise = F.tanh(torch.randn_like(x)) # smoothly clip standard normal to -1..1
+            x = tf.add_noise(x, noise, snr=snr)
+        return x.numpy()
+    
+    def __len__(self):
+        return len(self.files)
+
+    def __getitem__(self, index):
+        filename: pathlib.Path = self.files[index]
+        y, sr = sf.read(filename)
+        y = self.add_noise(y, self.noise_probability)
+        f0 = np.loadtxt(filename.with_suffix(self.f0_suffix))
+        f0 = np.where(f0 < 60, 0, f0)
+        tp = np.arange(len(f0)) * sr // 200
+        t = np.arange(y.shape[0])
+        mask = np.interp(t, tp, (f0 == 0).astype(float), right=1) > 0
+        interp_f0 = np.where(mask, 0, np.interp(t, tp, f0))
+
+        # base file name
+        rel_path = filename.relative_to(self.wav_dir)
+        noise = torch.ran
         return y.astype(np.float32), interp_f0.astype(np.float32), str(rel_path)
 
 
@@ -522,7 +689,67 @@ class M4Singer(LightningDataModule):
             drop_last=False,
         )
 
+class LibriLitModule(LightningDataModule):
+    def __init__(
+        self,
+        batch_size: int,
+        wav_dir: str,
+        duration: float = 2,
+        overlap: float = 0.5,
+        f0_suffix: str = ".pv",
+        noise_snr = [0.0, 10.0],
+        noise_probability = 0.0
+    ):
+        super(LibriLitModule, self).__init__()
+        self.save_hyperparameters()
+            
+    def setup(self, stage=None):
+        factory = partial(
+            LibriDevDataset,
+            wav_dir=self.hparams.init_args['wav_dir'],
+            duration=self.hparams.init_args['duration'],
+            overlap=self.hparams.init_args['overlap'],
+            f0_suffix=self.hparams.init_args['f0_suffix'],
+            noise_snr=self.hparams.init_args['noise_snr'],
+            noise_probability=self.hparams.init_args['noise_probability'],
+        )
 
+        if stage == "fit":
+            self.train_dataset = factory(split="train")
+
+        if stage == "validate" or stage == "fit":
+            self.valid_dataset = factory(split="valid")
+
+        if stage == "test":
+            self.test_dataset = factory(split="test")
+
+    def train_dataloader(self):
+        return DataLoader(
+            self.train_dataset,
+            batch_size=self.hparams.init_args['batch_size'],
+            num_workers=20,
+            shuffle=True,
+            drop_last=True,
+        )
+
+    def val_dataloader(self):
+        return DataLoader(
+            self.valid_dataset,
+            batch_size=self.hparams.init_args['batch_size'],
+            num_workers=20,
+            shuffle=False,
+            drop_last=False,
+        )
+
+    def test_dataloader(self):
+        return DataLoader(
+            self.test_dataset,
+            batch_size=self.hparams.init_args['batch_size'],
+            num_workers=20,
+            shuffle=False,
+            drop_last=False,
+        )
+                    
 class VCTK(M4Singer):
     def setup(self, stage=None):
         factory = partial(
@@ -547,6 +774,63 @@ class VCTK(M4Singer):
                 wav_dir=self.hparams.wav_dir,
                 split="test",
                 f0_suffix=self.hparams.f0_suffix,
+            )
+
+    def predict_dataloader(self):
+        return DataLoader(
+            self.predict_dataset,
+            batch_size=1,
+            num_workers=1,
+            shuffle=False,
+            drop_last=False,
+        )
+
+
+class Libri(LibriLitModule):
+    def __init__(
+        self,
+        batch_size: int,
+        wav_dir: str,
+        duration: float = 2,
+        overlap: float = 0.5,
+        f0_suffix: str = ".pv",
+        noise_snr = [0.0, 10.0],
+        noise_probability = 0.0
+    ):
+        super(Libri, self).__init__(batch_size,
+                                    wav_dir,
+                                    duration,
+                                    overlap,
+                                    f0_suffix,
+                                    noise_snr,
+                                    noise_probability)
+        self.save_hyperparameters()
+            
+    def setup(self, stage=None):
+        factory = partial(
+            LibriDevDataset,
+            wav_dir=self.hparams.init_args['wav_dir'],
+            duration=self.hparams.init_args['duration'],
+            overlap=self.hparams.init_args['overlap'],
+            f0_suffix=self.hparams.init_args['f0_suffix'],
+            noise_snr=self.hparams.init_args['noise_snr'],
+            noise_probability=self.hparams.init_args['noise_probability'],
+        )
+
+        if stage == "fit":
+            self.train_dataset = factory(split="train")
+
+        if stage == "validate" or stage == "fit":
+            self.valid_dataset = factory(split="valid")
+
+        if stage == "test":
+            self.test_dataset = factory(split="test")
+
+        if stage == "predict":
+            self.predict_dataset = LibriInferenceDataset(
+            wav_dir=self.hparams.init_args['wav_dir'],
+                split="test",
+                f0_suffix=self.hparams.init_args['f0_suffix'],
             )
 
     def predict_dataloader(self):
